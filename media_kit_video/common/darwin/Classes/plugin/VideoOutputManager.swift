@@ -6,10 +6,15 @@
 
 public class VideoOutputManager: NSObject {
   private let registry: FlutterTextureRegistry
+  private let pixelBufferUpdateCallback: VideoOutput.PixelBufferUpdateCallback?
   private var videoOutputs = [Int64: VideoOutput]()
 
-  init(registry: FlutterTextureRegistry) {
+  init(
+    registry: FlutterTextureRegistry,
+    pixelBufferUpdateCallback: VideoOutput.PixelBufferUpdateCallback? = nil
+  ) {
     self.registry = registry
+    self.pixelBufferUpdateCallback = pixelBufferUpdateCallback
   }
 
   public func create(
@@ -21,7 +26,8 @@ public class VideoOutputManager: NSObject {
       handle: handle,
       configuration: configuration,
       registry: self.registry,
-      textureUpdateCallback: textureUpdateCallback
+      textureUpdateCallback: textureUpdateCallback,
+      pixelBufferUpdateCallback: pixelBufferUpdateCallback
     )
 
     self.videoOutputs[handle] = videoOutput

@@ -30,7 +30,9 @@ public class SafeResizableTexture:
   }
 
   public func copyPixelBuffer() -> Unmanaged<CVPixelBuffer>? {
-    return child.copyPixelBuffer()
+    return locked {
+      child.copyPixelBuffer()
+    }
   }
 
   private func locked<T>(do block: () -> T) -> T {

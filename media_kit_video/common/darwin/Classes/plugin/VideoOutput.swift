@@ -13,6 +13,8 @@
 public class VideoOutput: NSObject {
   // Will be called on the main thread
   public typealias TextureUpdateCallback = (Int64, CGSize) -> Void
+  public typealias PixelBufferUpdateCallback =
+    (Int64, () -> CVPixelBuffer?) -> Void
 
   private static let isSimulator: Bool = {
     let isSim: Bool
@@ -24,10 +26,12 @@ public class VideoOutput: NSObject {
     return isSim
   }()
 
+  private let handleValue: Int64
   private let handle: OpaquePointer
   private let enableHardwareAcceleration: Bool
   private let registry: FlutterTextureRegistry
   private let textureUpdateCallback: TextureUpdateCallback
+  private let pixelBufferUpdateCallback: PixelBufferUpdateCallback?
   private let worker: Worker = .init()
   private var width: Int64?
   private var height: Int64?
@@ -40,17 +44,20 @@ public class VideoOutput: NSObject {
     handle: Int64,
     configuration: VideoOutputConfiguration,
     registry: FlutterTextureRegistry,
-    textureUpdateCallback: @escaping TextureUpdateCallback
+    textureUpdateCallback: @escaping TextureUpdateCallback,
+    pixelBufferUpdateCallback: PixelBufferUpdateCallback?
   ) {
-    let handle = OpaquePointer(bitPattern: Int(handle))
-    assert(handle != nil, "handle casting")
+    handleValue = handle
+    let pointer = OpaquePointer(bitPattern: Int(handle))
+    assert(pointer != nil, "handle casting")
 
-    self.handle = handle!
+    self.handle = pointer!
     width = configuration.width
     height = configuration.height
     enableHardwareAcceleration = configuration.enableHardwareAcceleration
     self.registry = registry
     self.textureUpdateCallback = textureUpdateCallback
+    self.pixelBufferUpdateCallback = pixelBufferUpdateCallback
 
     super.init()
 
@@ -172,6 +179,10 @@ public class VideoOutput: NSObject {
     texture.render(size)
     DispatchQueue.main.sync { [weak self] in
       guard let that = self else { return }
+      that.pixelBufferUpdateCallback?(
+        that.handleValue,
+        { that.texture.copyPixelBuffer()?.takeRetainedValue() }
+      )
       // Textures must be marked as available from the main thread
       that.registry.textureFrameAvailable(that.textureId)
     }
@@ -185,7 +196,7 @@ public class VideoOutput: NSObject {
                 height: Double(height!)
             )
         }
-        
+
         let params = MPVHelpers.getVideoOutParams(handle)
         return CGSize(
             width: Double(width ?? (params.rotate == 0 || params.rotate == 180

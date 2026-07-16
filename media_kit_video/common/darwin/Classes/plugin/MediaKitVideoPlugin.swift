@@ -22,9 +22,18 @@ public class MediaKitVideoPlugin: NSObject, FlutterPlugin {
       name: CHANNEL_NAME,
       binaryMessenger: binaryMessenger
     )
+    #if os(iOS)
+      let pictureInPictureChannel = FlutterMethodChannel(
+        name: "\(CHANNEL_NAME)/picture_in_picture",
+        binaryMessenger: binaryMessenger
+      )
+    #else
+      let pictureInPictureChannel: FlutterMethodChannel? = nil
+    #endif
     let instance = MediaKitVideoPlugin(
       registry: registry,
       channel: channel,
+      pictureInPictureChannel: pictureInPictureChannel,
       utils: utils
     )
     registrar.addMethodCallDelegate(instance, channel: channel)
@@ -33,16 +42,63 @@ public class MediaKitVideoPlugin: NSObject, FlutterPlugin {
   private let channel: FlutterMethodChannel
   private let videoOutputManager: VideoOutputManager
   private let utils: UtilsProtocol?
+  #if os(iOS)
+    private let pictureInPicture: PictureInPictureController
+  #endif
 
   init(
     registry: FlutterTextureRegistry,
     channel: FlutterMethodChannel,
+    pictureInPictureChannel: FlutterMethodChannel?,
     utils: UtilsProtocol?
   ) {
     self.channel = channel
-    videoOutputManager = VideoOutputManager(
-      registry: registry
-    )
+    #if os(iOS)
+      let pictureInPicture = PictureInPictureController()
+      self.pictureInPicture = pictureInPicture
+      videoOutputManager = VideoOutputManager(
+        registry: registry,
+        pixelBufferUpdateCallback: { [weak pictureInPicture] handle, pixelBuffer in
+          pictureInPicture?.enqueue(handle: handle, pixelBuffer: pixelBuffer)
+        }
+      )
+      pictureInPicture.onSetPlaying = { handle, session, playing in
+        pictureInPictureChannel?.invokeMethod(
+          "PictureInPicture.SetPlaying",
+          arguments: [
+            "handle": handle,
+            "session": session,
+            "playing": playing,
+          ]
+        )
+      }
+      pictureInPicture.onSeek = { handle, session, position in
+        pictureInPictureChannel?.invokeMethod(
+          "PictureInPicture.Seek",
+          arguments: [
+            "handle": handle,
+            "session": session,
+            "position": position,
+          ]
+        )
+      }
+      pictureInPicture.onStateChanged = {
+        handle, session, state, reason, pauseRequired, background in
+        pictureInPictureChannel?.invokeMethod(
+          "PictureInPicture.StateChanged",
+          arguments: [
+            "handle": handle,
+            "session": session,
+            "state": state,
+            "reason": reason,
+            "pauseRequired": pauseRequired,
+            "background": background,
+          ]
+        )
+      }
+    #else
+      videoOutputManager = VideoOutputManager(registry: registry)
+    #endif
     self.utils = utils
   }
 
@@ -61,6 +117,12 @@ public class MediaKitVideoPlugin: NSObject, FlutterPlugin {
       handleEnterNativeFullscreenMethodCall(call.arguments, result)
     case "Utils.ExitNativeFullscreen":
       handleExitNativeFullscreenMethodCall(call.arguments, result)
+    #if os(iOS)
+      case "PictureInPicture.Update":
+        handlePictureInPictureUpdate(call.arguments, start: false, result)
+      case "PictureInPicture.Start":
+        handlePictureInPictureUpdate(call.arguments, start: true, result)
+    #endif
     default:
       result(FlutterMethodNotImplemented)
     }
@@ -135,6 +197,10 @@ public class MediaKitVideoPlugin: NSObject, FlutterPlugin {
 
     assert(handle != nil, "handle must be an Int64")
 
+    #if os(iOS)
+      pictureInPicture.dispose(handle: handle!)
+    #endif
+
     videoOutputManager.destroy(
       handle: handle!
     )
@@ -165,4 +231,41 @@ public class MediaKitVideoPlugin: NSObject, FlutterPlugin {
     utils?.exitNativeFullscreen()
     result(nil)
   }
+
+  #if os(iOS)
+    private func handlePictureInPictureUpdate(
+      _ arguments: Any?,
+      start: Bool,
+      _ result: FlutterResult
+    ) {
+      let args = arguments as? [String: Any]
+      guard let handleString = args?["handle"] as? String,
+        let handle = Int64(handleString)
+      else {
+        return result(
+          FlutterError(
+            code: "invalid_handle",
+            message: "Picture in Picture requires a valid player handle",
+            details: nil
+          ))
+      }
+      _ = pictureInPicture.update(
+        handle: handle,
+        session: (args?["session"] as? NSNumber)?.int64Value ?? 0,
+        loaded: (args?["loaded"] as? Bool) ?? false,
+        playing: (args?["playing"] as? Bool) ?? false,
+        completed: (args?["completed"] as? Bool) ?? false,
+        audioOnly: (args?["audioOnly"] as? Bool) ?? false,
+        position: (args?["position"] as? NSNumber)?.doubleValue ?? 0,
+        duration: (args?["duration"] as? NSNumber)?.doubleValue ?? 0,
+        inlineFrame: CGRect(
+          x: (args?["inlineX"] as? NSNumber)?.doubleValue ?? 0,
+          y: (args?["inlineY"] as? NSNumber)?.doubleValue ?? 0,
+          width: (args?["inlineWidth"] as? NSNumber)?.doubleValue ?? 0,
+          height: (args?["inlineHeight"] as? NSNumber)?.doubleValue ?? 0
+        )
+      )
+      result(start ? pictureInPicture.start() : pictureInPicture.status)
+    }
+  #endif
 }
