@@ -541,6 +541,10 @@ extension PictureInPictureController:
     state = .active
     log("PiP started")
     emitState(reason: "started")
+    DispatchQueue.main.async { [weak self] in
+      guard self?.state == .active else { return }
+      _ = UIApplication.shared.perform(NSSelectorFromString("suspend"))
+    }
   }
 
   func pictureInPictureController(
