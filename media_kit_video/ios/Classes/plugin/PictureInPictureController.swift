@@ -397,7 +397,7 @@ final class PictureInPictureController: NSObject {
     )
     let controller = AVPictureInPictureController(contentSource: source)
     controller.delegate = self
-    controller.canStartPictureInPictureAutomaticallyFromInline = false
+    controller.canStartPictureInPictureAutomaticallyFromInline = true
     possibleObservation = controller.observe(
       \.isPictureInPicturePossible,
       options: [.initial, .new]
@@ -413,9 +413,18 @@ final class PictureInPictureController: NSObject {
     guard state == .preparing,
       controller?.isPictureInPicturePossible == true
     else { return }
+    let application = UIApplication.shared
+    let suspend = NSSelectorFromString("suspend")
+    guard application.responds(to: suspend) else {
+      failRequest(reason: "suspendUnavailable")
+      return
+    }
     state = .requesting
-    log("PiP ready; starting")
-    controller?.startPictureInPicture()
+    log("PiP ready; suspending app")
+    DispatchQueue.main.async { [weak self, weak application] in
+      guard self?.state == .requesting else { return }
+      _ = application?.perform(suspend)
+    }
   }
 
   private func attachDisplayLayer() -> Bool {
