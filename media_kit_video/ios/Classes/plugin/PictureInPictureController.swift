@@ -314,10 +314,6 @@ final class PictureInPictureController: NSObject {
       log("lifecycle background, PiP request pending")
       return
     }
-    if configuration?.playing == true {
-      log("backgrounded without PiP; pausing playback")
-      emitState(reason: "backgroundedWithoutPiP", pauseRequired: true)
-    }
   }
 
   @objc private func willEnterForeground() {
