@@ -1,5 +1,6 @@
 import AVKit
 import CoreMedia
+import Flutter
 import UIKit
 
 private final class PictureInPictureHostView: UIView {
@@ -23,19 +24,6 @@ private final class PictureInPictureHostView: UIView {
 }
 
 final class PictureInPictureController: NSObject {
-  typealias StateCallback = (
-    Int64,
-    Int64,
-    String,
-    String,
-    Bool,
-    Bool
-  ) -> Void
-
-  var onSetPlaying: ((Int64, Int64, Bool) -> Void)?
-  var onSeek: ((Int64, Int64, Double) -> Void)?
-  var onStateChanged: StateCallback?
-
   private enum State {
     case inline
     case preparing
@@ -74,6 +62,7 @@ final class PictureInPictureController: NSObject {
   }
 
   private static let readinessTimeout: TimeInterval = 1.5
+  private let channel: FlutterMethodChannel
   private let displayLayer = AVSampleBufferDisplayLayer()
   private let hostClock = CMClockGetHostTimeClock()
   private var controller: AVPictureInPictureController?
@@ -92,7 +81,8 @@ final class PictureInPictureController: NSObject {
   private var restoreRequested = false
   private var loggedFirstFrame = false
 
-  override init() {
+  init(channel: FlutterMethodChannel) {
+    self.channel = channel
     super.init()
     displayLayer.videoGravity = .resizeAspect
     var timebase: CMTimebase?
@@ -352,18 +342,8 @@ final class PictureInPictureController: NSObject {
   }
 
   private func failRequest(reason: String) {
-    guard state == .preparing || state == .requesting else { return }
-    readinessTimer?.invalidate()
-    readinessTimer = nil
-    state = .inline
     log("PiP start failed, reason=\(reason)")
-    emitState(
-      reason: reason,
-      pauseRequired: isInBackground && configuration?.playing == true
-    )
-    transitionHandle = nil
-    transitionSession = nil
-    cleanUpRenderer()
+    cancelRequest(reason: reason)
   }
 
   private func ineligibleReason(
@@ -496,13 +476,16 @@ final class PictureInPictureController: NSObject {
         self.configuration = configuration
       }
     }
-    onStateChanged?(
-      handle,
-      session,
-      state.eventValue,
-      reason,
-      pauseRequired,
-      isInBackground
+    channel.invokeMethod(
+      "PictureInPicture.StateChanged",
+      arguments: [
+        "handle": handle,
+        "session": session,
+        "state": state.eventValue,
+        "reason": reason,
+        "pauseRequired": pauseRequired,
+        "background": isInBackground,
+      ]
     )
   }
 
@@ -602,7 +585,14 @@ extension PictureInPictureController:
     if let handle = transitionHandle ?? configuration?.handle,
       let session = transitionSession ?? configuration?.session
     {
-      onSetPlaying?(handle, session, playing)
+      channel.invokeMethod(
+        "PictureInPicture.SetPlaying",
+        arguments: [
+          "handle": handle,
+          "session": session,
+          "playing": playing,
+        ]
+      )
     }
   }
 
@@ -641,7 +631,14 @@ extension PictureInPictureController:
       )
       configuration.position = target
       self.configuration = configuration
-      onSeek?(configuration.handle, configuration.session, target)
+      channel.invokeMethod(
+        "PictureInPicture.Seek",
+        arguments: [
+          "handle": configuration.handle,
+          "session": configuration.session,
+          "position": target,
+        ]
+      )
     }
     completionHandler()
   }

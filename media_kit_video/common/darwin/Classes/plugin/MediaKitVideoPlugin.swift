@@ -54,7 +54,9 @@ public class MediaKitVideoPlugin: NSObject, FlutterPlugin {
   ) {
     self.channel = channel
     #if os(iOS)
-      let pictureInPicture = PictureInPictureController()
+      let pictureInPicture = PictureInPictureController(
+        channel: pictureInPictureChannel!
+      )
       self.pictureInPicture = pictureInPicture
       videoOutputManager = VideoOutputManager(
         registry: registry,
@@ -62,40 +64,6 @@ public class MediaKitVideoPlugin: NSObject, FlutterPlugin {
           pictureInPicture?.enqueue(handle: handle, pixelBuffer: pixelBuffer)
         }
       )
-      pictureInPicture.onSetPlaying = { handle, session, playing in
-        pictureInPictureChannel?.invokeMethod(
-          "PictureInPicture.SetPlaying",
-          arguments: [
-            "handle": handle,
-            "session": session,
-            "playing": playing,
-          ]
-        )
-      }
-      pictureInPicture.onSeek = { handle, session, position in
-        pictureInPictureChannel?.invokeMethod(
-          "PictureInPicture.Seek",
-          arguments: [
-            "handle": handle,
-            "session": session,
-            "position": position,
-          ]
-        )
-      }
-      pictureInPicture.onStateChanged = {
-        handle, session, state, reason, pauseRequired, background in
-        pictureInPictureChannel?.invokeMethod(
-          "PictureInPicture.StateChanged",
-          arguments: [
-            "handle": handle,
-            "session": session,
-            "state": state,
-            "reason": reason,
-            "pauseRequired": pauseRequired,
-            "background": background,
-          ]
-        )
-      }
     #else
       videoOutputManager = VideoOutputManager(registry: registry)
     #endif
