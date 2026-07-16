@@ -299,6 +299,7 @@ final class PictureInPictureController: NSObject {
     if !loggedFirstFrame {
       loggedFirstFrame = true
       log("renderer ready \(Int(size.width))x\(Int(size.height))")
+      startWhenPossible()
     }
   }
 
@@ -411,7 +412,8 @@ final class PictureInPictureController: NSObject {
 
   private func startWhenPossible() {
     guard state == .preparing,
-      controller?.isPictureInPicturePossible == true
+      controller?.isPictureInPicturePossible == true,
+      loggedFirstFrame
     else { return }
     let application = UIApplication.shared
     let suspend = NSSelectorFromString("suspend")
@@ -542,7 +544,9 @@ extension PictureInPictureController:
     log("PiP started")
     emitState(reason: "started")
     DispatchQueue.main.async { [weak self] in
-      guard self?.state == .active else { return }
+      guard self?.state == .active,
+        UIApplication.shared.applicationState == .active
+      else { return }
       _ = UIApplication.shared.perform(NSSelectorFromString("suspend"))
     }
   }
