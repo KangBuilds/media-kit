@@ -14,7 +14,7 @@ public class VideoOutput: NSObject {
   // Will be called on the main thread
   public typealias TextureUpdateCallback = (Int64, CGSize) -> Void
   public typealias PixelBufferUpdateCallback =
-    (Int64, () -> CVPixelBuffer?) -> Void
+    (Int64, () -> CVPixelBuffer?) -> Bool
 
   private static let isSimulator: Bool = {
     let isSim: Bool
@@ -179,12 +179,14 @@ public class VideoOutput: NSObject {
     texture.render(size)
     DispatchQueue.main.sync { [weak self] in
       guard let that = self else { return }
-      that.pixelBufferUpdateCallback?(
+      let presentedInline = that.pixelBufferUpdateCallback?(
         that.handleValue,
         { that.texture.copyPixelBuffer()?.takeRetainedValue() }
-      )
-      // Textures must be marked as available from the main thread
-      that.registry.textureFrameAvailable(that.textureId)
+      ) == true
+      if !presentedInline {
+        // Textures must be marked as available from the main thread
+        that.registry.textureFrameAvailable(that.textureId)
+      }
     }
   }
 
