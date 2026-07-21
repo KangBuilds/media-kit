@@ -71,10 +71,16 @@ public class MediaKitVideoPlugin: NSObject, FlutterPlugin {
         registry: registry,
         pixelBufferUpdateCallback: {
           [weak pictureInPicture, weak inlineVideoViews] handle, pixelBuffer in
+          lazy var sharedPixelBuffer = pixelBuffer()
           let presentedInline =
-            inlineVideoViews?.enqueue(handle: handle, pixelBuffer: pixelBuffer)
-            == true
-          pictureInPicture?.enqueue(handle: handle, pixelBuffer: pixelBuffer)
+            inlineVideoViews?.enqueue(
+              handle: handle,
+              pixelBuffer: { sharedPixelBuffer }
+            ) == true
+          pictureInPicture?.enqueue(
+            handle: handle,
+            pixelBuffer: { sharedPixelBuffer }
+          )
           return presentedInline
         }
       )
