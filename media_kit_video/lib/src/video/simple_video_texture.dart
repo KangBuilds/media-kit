@@ -80,6 +80,7 @@ class SimpleVideoState extends State<SimpleVideo> {
                   UiKitView(
                     viewType:
                         'com.alexmercerind/media_kit_video/inline_video',
+                    hitTestBehavior: PlatformViewHitTestBehavior.transparent,
                     creationParams: {
                       'handle': ctr.player.handle.toString(),
                     },
