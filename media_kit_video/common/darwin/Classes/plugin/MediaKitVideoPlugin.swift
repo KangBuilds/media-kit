@@ -37,6 +37,12 @@ public class MediaKitVideoPlugin: NSObject, FlutterPlugin {
       utils: utils
     )
     registrar.addMethodCallDelegate(instance, channel: channel)
+    #if os(iOS)
+      registrar.register(
+        InlineVideoViewFactory(manager: instance.inlineVideoViews),
+        withId: "\(CHANNEL_NAME)/inline_video"
+      )
+    #endif
   }
 
   private let channel: FlutterMethodChannel
@@ -44,6 +50,7 @@ public class MediaKitVideoPlugin: NSObject, FlutterPlugin {
   private let utils: UtilsProtocol?
   #if os(iOS)
     private let pictureInPicture: PictureInPictureController
+    private let inlineVideoViews: InlineVideoViewManager
   #endif
 
   init(
@@ -57,11 +64,18 @@ public class MediaKitVideoPlugin: NSObject, FlutterPlugin {
       let pictureInPicture = PictureInPictureController(
         channel: pictureInPictureChannel!
       )
+      let inlineVideoViews = InlineVideoViewManager()
       self.pictureInPicture = pictureInPicture
+      self.inlineVideoViews = inlineVideoViews
       videoOutputManager = VideoOutputManager(
         registry: registry,
-        pixelBufferUpdateCallback: { [weak pictureInPicture] handle, pixelBuffer in
+        pixelBufferUpdateCallback: {
+          [weak pictureInPicture, weak inlineVideoViews] handle, pixelBuffer in
+          let presentedInline =
+            inlineVideoViews?.enqueue(handle: handle, pixelBuffer: pixelBuffer)
+            == true
           pictureInPicture?.enqueue(handle: handle, pixelBuffer: pixelBuffer)
+          return presentedInline
         }
       )
     #else

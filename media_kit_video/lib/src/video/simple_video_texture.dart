@@ -1,6 +1,8 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 class SimpleVideo extends StatefulWidget {
@@ -72,8 +74,19 @@ class SimpleVideoState extends State<SimpleVideo> {
                 : rect.height / _devicePixelRatio * widget.aspectRatio!,
             height: rect.height / _devicePixelRatio,
             child: Stack(
+              fit: StackFit.expand,
               children: [
-                Texture(textureId: id, filterQuality: widget.filterQuality),
+                if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS)
+                  UiKitView(
+                    viewType:
+                        'com.alexmercerind/media_kit_video/inline_video',
+                    creationParams: {
+                      'handle': ctr.player.handle.toString(),
+                    },
+                    creationParamsCodec: const StandardMessageCodec(),
+                  )
+                else
+                  Texture(textureId: id, filterQuality: widget.filterQuality),
                 if (rect.width <= 1.0 && rect.height <= 1.0)
                   Positioned.fill(child: ColoredBox(color: widget.fill)),
               ],
