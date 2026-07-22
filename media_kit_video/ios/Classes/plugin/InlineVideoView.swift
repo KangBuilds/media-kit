@@ -25,12 +25,17 @@ final class InlineVideoViewManager {
   }
 
   func enqueue(handle: Int64, pixelBuffer: () -> CVPixelBuffer?) -> Bool {
-    guard let view = views[handle]?.value, view.window != nil else {
+    guard let view = views[handle]?.value else {
       views[handle] = nil
       return false
     }
+    guard view.window != nil else { return false }
     view.enqueue(pixelBuffer: pixelBuffer)
     return true
+  }
+
+  func displayLayer(handle: Int64) -> AVSampleBufferDisplayLayer? {
+    views[handle]?.value?.displayLayer
   }
 }
 
@@ -83,7 +88,7 @@ final class InlineVideoRenderView: UIView {
     AVSampleBufferDisplayLayer.self
   }
 
-  private var displayLayer: AVSampleBufferDisplayLayer {
+  var displayLayer: AVSampleBufferDisplayLayer {
     layer as! AVSampleBufferDisplayLayer
   }
 

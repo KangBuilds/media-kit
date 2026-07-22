@@ -3,30 +3,9 @@ import CoreMedia
 import Flutter
 import UIKit
 
-private final class PictureInPictureHostView: UIView {
-  let displayLayer: AVSampleBufferDisplayLayer
-
-  init(frame: CGRect, displayLayer: AVSampleBufferDisplayLayer) {
-    self.displayLayer = displayLayer
-    super.init(frame: frame)
-    layer.addSublayer(displayLayer)
-  }
-
-  @available(*, unavailable)
-  required init?(coder: NSCoder) {
-    fatalError("init(coder:) has not been implemented")
-  }
-
-  override func layoutSubviews() {
-    super.layoutSubviews()
-    displayLayer.frame = bounds
-  }
-}
-
 final class PictureInPictureController: NSObject {
   private enum State {
     case inline
-    case preparing
     case requesting
     case active
     case restoring
@@ -35,7 +14,7 @@ final class PictureInPictureController: NSObject {
       switch self {
       case .inline:
         "inline"
-      case .preparing, .requesting:
+      case .requesting:
         "requestingPiP"
       case .active:
         "pipActive"
@@ -54,23 +33,17 @@ final class PictureInPictureController: NSObject {
     var audioOnly: Bool
     var position: Double
     var duration: Double
-    var inlineFrame: CGRect
 
     var eligible: Bool {
       loaded && playing && !completed && !audioOnly
     }
   }
 
-  private static let readinessTimeout: TimeInterval = 1.5
   private let channel: FlutterMethodChannel
-  private let displayLayer = AVSampleBufferDisplayLayer()
-  private let hostClock = CMClockGetHostTimeClock()
+  private let inlineVideoViews: InlineVideoViewManager
   private var controller: AVPictureInPictureController?
+  private weak var sourceLayer: AVSampleBufferDisplayLayer?
   private var possibleObservation: NSKeyValueObservation?
-  private var readinessTimer: Timer?
-  private var hostView: PictureInPictureHostView?
-  private var formatDescription: CMVideoFormatDescription?
-  private var formatSize = CGSize.zero
   private var configuration: PlaybackConfiguration?
   private var transitionHandle: Int64?
   private var transitionSession: Int64?
@@ -79,23 +52,14 @@ final class PictureInPictureController: NSObject {
     UIApplication.shared.applicationState == .background
   private var stopReason: String?
   private var restoreRequested = false
-  private var loggedFirstFrame = false
 
-  init(channel: FlutterMethodChannel) {
+  init(
+    channel: FlutterMethodChannel,
+    inlineVideoViews: InlineVideoViewManager
+  ) {
     self.channel = channel
+    self.inlineVideoViews = inlineVideoViews
     super.init()
-    displayLayer.videoGravity = .resizeAspect
-    var timebase: CMTimebase?
-    if CMTimebaseCreateWithSourceClock(
-      allocator: kCFAllocatorDefault,
-      sourceClock: hostClock,
-      timebaseOut: &timebase
-    ) == noErr, let timebase {
-      displayLayer.controlTimebase = timebase
-      CMTimebaseSetTime(timebase, time: CMClockGetTime(hostClock))
-      CMTimebaseSetRate(timebase, rate: 1)
-    }
-
     NotificationCenter.default.addObserver(
       self,
       selector: #selector(didEnterBackground),
@@ -112,7 +76,6 @@ final class PictureInPictureController: NSObject {
 
   deinit {
     NotificationCenter.default.removeObserver(self)
-    readinessTimer?.invalidate()
   }
 
   func update(
@@ -123,8 +86,7 @@ final class PictureInPictureController: NSObject {
     completed: Bool,
     audioOnly: Bool,
     position: Double,
-    duration: Double,
-    inlineFrame: CGRect
+    duration: Double
   ) -> [String: Any] {
     if let current = configuration, current.handle != handle {
       dispose(handle: current.handle)
@@ -143,14 +105,11 @@ final class PictureInPictureController: NSObject {
       completed: completed,
       audioOnly: audioOnly,
       position: position,
-      duration: duration,
-      inlineFrame: inlineFrame
+      duration: duration
     )
     controller?.invalidatePlaybackState()
 
-    if (state == .preparing || state == .requesting),
-      configuration?.eligible != true
-    {
+    if state == .requesting, configuration?.eligible != true {
       cancelRequest(reason: "playbackBecameIneligible")
     } else if state == .active,
       completed || audioOnly
@@ -159,6 +118,12 @@ final class PictureInPictureController: NSObject {
       state = .restoring
       emitState(reason: stopReason!)
       controller?.stopPictureInPicture()
+    }
+
+    if loaded && !completed && !audioOnly {
+      setupController(handle: handle)
+    } else if state == .inline {
+      cleanUpController()
     }
 
     return status
@@ -172,56 +137,16 @@ final class PictureInPictureController: NSObject {
     ]
   }
 
-  func start() -> [String: Any] {
-    if state == .preparing || state == .requesting || state == .active {
-      return status.merging(["accepted": true]) { _, new in new }
-    }
-    guard state == .inline, let configuration else {
-      return status.merging(["accepted": false]) { _, new in new }
-    }
-
-    let supported = AVPictureInPictureController.isPictureInPictureSupported()
-    guard supported, configuration.eligible else {
-      log("manual request rejected, reason=\(ineligibleReason(configuration, supported: supported))")
-      return status.merging(["accepted": false]) { _, new in new }
-    }
-
-    transitionHandle = configuration.handle
-    transitionSession = configuration.session
-    state = .preparing
-    log("requesting PiP")
-    emitState(reason: "manualRequest")
-    guard prepare() else {
-      failRequest(reason: "rendererUnavailable")
-      return status.merging(["accepted": false]) { _, new in new }
-    }
-
-    readinessTimer?.invalidate()
-    readinessTimer = Timer.scheduledTimer(
-      withTimeInterval: Self.readinessTimeout,
-      repeats: false
-    ) { [weak self] _ in
-      guard let self,
-        self.state == .preparing || self.state == .requesting
-      else { return }
-      self.failRequest(reason: "readinessTimeout")
-    }
-    startWhenPossible()
-    return status.merging(["accepted": true]) { _, new in new }
-  }
-
   func dispose(handle: Int64) {
     guard configuration?.handle == handle || transitionHandle == handle else {
       return
     }
 
-    readinessTimer?.invalidate()
-    readinessTimer = nil
     if configuration?.handle == handle {
       configuration = nil
     }
 
-    if state == .active {
+    if state == .active || state == .restoring {
       transitionHandle = handle
       stopReason = "playerDisposed"
       state = .restoring
@@ -231,65 +156,7 @@ final class PictureInPictureController: NSObject {
       transitionHandle = nil
       transitionSession = nil
       controller?.stopPictureInPicture()
-      cleanUpRenderer()
-    }
-  }
-
-  func enqueue(handle: Int64, pixelBuffer: () -> CVPixelBuffer?) {
-    guard configuration?.handle == handle,
-      state == .preparing || state == .requesting || state == .active
-        || state == .restoring
-    else { return }
-    if displayLayer.status == .failed {
-      displayLayer.flush()
-    }
-    guard displayLayer.isReadyForMoreMediaData else { return }
-    guard let pixelBuffer = pixelBuffer() else { return }
-
-    let size = CGSize(
-      width: CVPixelBufferGetWidth(pixelBuffer),
-      height: CVPixelBufferGetHeight(pixelBuffer)
-    )
-    let isNewFormat = formatDescription == nil || formatSize != size
-    let presentationTime = CMClockGetTime(hostClock)
-
-    if isNewFormat {
-      formatSize = size
-      CMVideoFormatDescriptionCreateForImageBuffer(
-        allocator: kCFAllocatorDefault,
-        imageBuffer: pixelBuffer,
-        formatDescriptionOut: &formatDescription
-      )
-    }
-    guard let formatDescription else { return }
-
-    var timing = CMSampleTimingInfo(
-      duration: .invalid,
-      presentationTimeStamp: presentationTime,
-      decodeTimeStamp: .invalid
-    )
-    var sampleBuffer: CMSampleBuffer?
-    guard
-      CMSampleBufferCreateReadyWithImageBuffer(
-        allocator: kCFAllocatorDefault,
-        imageBuffer: pixelBuffer,
-        formatDescription: formatDescription,
-        sampleTiming: &timing,
-        sampleBufferOut: &sampleBuffer
-      ) == noErr, let sampleBuffer
-    else { return }
-
-    CMSetAttachment(
-      sampleBuffer,
-      key: kCMSampleAttachmentKey_DisplayImmediately,
-      value: kCFBooleanTrue,
-      attachmentMode: kCMAttachmentMode_ShouldPropagate
-    )
-    displayLayer.enqueue(sampleBuffer)
-    if !loggedFirstFrame {
-      loggedFirstFrame = true
-      log("renderer ready \(Int(size.width))x\(Int(size.height))")
-      startWhenPossible()
+      cleanUpController()
     }
   }
 
@@ -300,20 +167,19 @@ final class PictureInPictureController: NSObject {
       emitState(reason: "backgrounded")
       return
     }
-    if state == .preparing || state == .requesting {
+    if state == .requesting {
       log("lifecycle background, PiP request pending")
+      emitState(reason: "backgrounded")
       return
     }
   }
 
   @objc private func willEnterForeground() {
     isInBackground = false
-    readinessTimer?.invalidate()
-    readinessTimer = nil
     log("lifecycle foreground")
 
     switch state {
-    case .preparing, .requesting:
+    case .requesting:
       cancelRequest(reason: "returnedToForeground")
     case .active:
       state = .restoring
@@ -328,9 +194,7 @@ final class PictureInPictureController: NSObject {
   }
 
   private func cancelRequest(reason: String) {
-    guard state == .preparing || state == .requesting else { return }
-    readinessTimer?.invalidate()
-    readinessTimer = nil
+    guard state == .requesting else { return }
     state = .inline
     emitState(
       reason: reason,
@@ -338,7 +202,6 @@ final class PictureInPictureController: NSObject {
     )
     transitionHandle = nil
     transitionSession = nil
-    cleanUpRenderer()
   }
 
   private func failRequest(reason: String) {
@@ -346,28 +209,14 @@ final class PictureInPictureController: NSObject {
     cancelRequest(reason: reason)
   }
 
-  private func ineligibleReason(
-    _ configuration: PlaybackConfiguration,
-    supported: Bool
-  ) -> String {
-    if !supported { return "unsupported" }
-    if !configuration.loaded { return "noVideo" }
-    if configuration.audioOnly { return "audioOnly" }
-    if configuration.completed { return "completed" }
-    if !configuration.playing { return "paused" }
-    return "unavailable"
-  }
+  private func setupController(handle: Int64) {
+    guard state == .inline,
+      AVPictureInPictureController.isPictureInPictureSupported(),
+      let displayLayer = inlineVideoViews.displayLayer(handle: handle)
+    else { return }
+    guard controller == nil || sourceLayer !== displayLayer else { return }
 
-  private func prepare() -> Bool {
-    guard AVPictureInPictureController.isPictureInPictureSupported(),
-      attachDisplayLayer()
-    else { return false }
-    setupController()
-    return true
-  }
-
-  private func setupController() {
-    guard controller == nil else { return }
+    cleanUpController()
     let source = AVPictureInPictureController.ContentSource(
       sampleBufferDisplayLayer: displayLayer,
       playbackDelegate: self
@@ -379,82 +228,17 @@ final class PictureInPictureController: NSObject {
       \.isPictureInPicturePossible,
       options: [.initial, .new]
     ) { [weak self] controller, _ in
-      guard let self else { return }
-      self.log("readiness possible=\(controller.isPictureInPicturePossible)")
-      self.startWhenPossible()
+      self?.log("readiness possible=\(controller.isPictureInPicturePossible)")
     }
+    sourceLayer = displayLayer
     self.controller = controller
   }
 
-  private func startWhenPossible() {
-    guard state == .preparing,
-      controller?.isPictureInPicturePossible == true,
-      loggedFirstFrame
-    else { return }
-    let application = UIApplication.shared
-    let suspend = NSSelectorFromString("suspend")
-    guard application.responds(to: suspend) else {
-      failRequest(reason: "suspendUnavailable")
-      return
-    }
-    state = .requesting
-    log("PiP ready; suspending app")
-    DispatchQueue.main.async { [weak self, weak application] in
-      guard self?.state == .requesting else { return }
-      _ = application?.perform(suspend)
-    }
-  }
-
-  private func attachDisplayLayer() -> Bool {
-    let scenes = UIApplication.shared.connectedScenes
-      .compactMap { $0 as? UIWindowScene }
-      .sorted {
-        $0.activationState == .foregroundActive
-          && $1.activationState != .foregroundActive
-      }
-    var windows = scenes.flatMap(\.windows)
-    if let appDelegateWindow = UIApplication.shared.delegate?.window ?? nil,
-      !windows.contains(where: { $0 === appDelegateWindow })
-    {
-      windows.append(appDelegateWindow)
-    }
-    let window =
-      windows.first(where: \.isKeyWindow)
-      ?? windows.first {
-        !$0.isHidden && $0.alpha > 0 && $0.windowLevel == .normal
-          && $0.rootViewController != nil
-      }
-    guard let window,
-      let rootView = window.rootViewController?.view
-    else { return false }
-    guard let containerView = rootView.superview else { return false }
-    let inlineFrame = containerView
-      .convert(configuration?.inlineFrame ?? .zero, from: window)
-      .intersection(containerView.bounds)
-    guard !inlineFrame.isNull, !inlineFrame.isEmpty else { return false }
-
-    if hostView?.window !== window {
-      hostView?.removeFromSuperview()
-      let hostView = PictureInPictureHostView(
-        frame: inlineFrame,
-        displayLayer: displayLayer
-      )
-      hostView.isUserInteractionEnabled = false
-      hostView.backgroundColor = .clear
-      containerView.insertSubview(hostView, belowSubview: rootView)
-      self.hostView = hostView
-      loggedFirstFrame = false
-    }
-    hostView?.frame = inlineFrame
-    displayLayer.frame = hostView?.bounds ?? .zero
-    return true
-  }
-
-  private func cleanUpRenderer() {
-    displayLayer.flushAndRemoveImage()
-    hostView?.removeFromSuperview()
-    hostView = nil
-    loggedFirstFrame = false
+  private func cleanUpController() {
+    possibleObservation = nil
+    controller?.delegate = nil
+    controller = nil
+    sourceLayer = nil
   }
 
   private func emitState(
@@ -506,6 +290,20 @@ extension PictureInPictureController:
   AVPictureInPictureControllerDelegate,
   AVPictureInPictureSampleBufferPlaybackDelegate
 {
+  func pictureInPictureControllerWillStartPictureInPicture(
+    _ pictureInPictureController: AVPictureInPictureController
+  ) {
+    guard state == .inline, let configuration, configuration.eligible else {
+      pictureInPictureController.stopPictureInPicture()
+      return
+    }
+    transitionHandle = configuration.handle
+    transitionSession = configuration.session
+    state = .requesting
+    log("automatic PiP requested")
+    emitState(reason: "automaticRequest")
+  }
+
   func pictureInPictureControllerDidStartPictureInPicture(
     _ pictureInPictureController: AVPictureInPictureController
   ) {
@@ -517,17 +315,9 @@ extension PictureInPictureController:
     }
     transitionHandle = configuration?.handle
     transitionSession = configuration?.session
-    readinessTimer?.invalidate()
-    readinessTimer = nil
     state = .active
     log("PiP started")
     emitState(reason: "started")
-    DispatchQueue.main.async { [weak self] in
-      guard self?.state == .active,
-        UIApplication.shared.applicationState == .active
-      else { return }
-      _ = UIApplication.shared.perform(NSSelectorFromString("suspend"))
-    }
   }
 
   func pictureInPictureController(
@@ -543,8 +333,6 @@ extension PictureInPictureController:
   ) {
     let handle = transitionHandle
     let session = transitionSession
-    readinessTimer?.invalidate()
-    readinessTimer = nil
     let reason =
       restoreRequested
       ? "restoredInline"
@@ -562,7 +350,9 @@ extension PictureInPictureController:
     transitionSession = nil
     stopReason = nil
     restoreRequested = false
-    cleanUpRenderer()
+    if configuration == nil {
+      cleanUpController()
+    }
   }
 
   func pictureInPictureController(
